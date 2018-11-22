@@ -1,5 +1,5 @@
 
-# GPUSeed
+# GPUseed
 
 
 
