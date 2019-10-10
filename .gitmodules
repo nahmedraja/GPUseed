@@ -1,0 +1,6 @@
+[submodule "cub"]
+	path = cub
+	url = https://github.com/NVlabs/cub.git
+[submodule "bwa"]
+	path = bwa
+	url = https://github.com/nahmedraja/bwa.git
