@@ -2809,7 +2809,7 @@ int main(int argc, char *argv[]) {
 	int is_smem = 0;
 	int print_out = 0;
 	int c;
-	while ((c = getopt(argc, argv, "k:sp")) >= 0) {
+	while ((c = getopt(argc, argv, "k:so")) >= 0) {
 			switch (c) {
 			case 'k':
 				min_seed_size = atoi(optarg);
@@ -2817,7 +2817,7 @@ int main(int argc, char *argv[]) {
 			case 's':
 				is_smem = 1;
 				break;
-			case 'p':
+			case 'o':
 				print_out = 1;
 				break;
 
