@@ -15,6 +15,8 @@ Compile bwa
 ```
 $ cd bwa
 $ make
+```
+
 
 Build the index
 
