@@ -2104,9 +2104,8 @@ __global__ void find_seed_intervals_gpu(uint32_t *packed_read_batch_fow,  uint32
 
 	int m;
 	for (m = 0; m < N_SHUFFLES; m++) {
-		is_shfl[m] = tid%n_tasks ? 1 : 0;
-		if (is_shfl[m]) is_shfl[m] = (thread_read_num == read_num[(tid%n_tasks) - (m+1)]) ? 1 : 0;
 		if (is_shfl[m]) is_shfl[m] = ((tid%32) - m > 0) ? 1 : 0;
+		if (is_shfl[m]) is_shfl[m] = (tid%n_tasks) - (m+1) < 0 ? 0 : (thread_read_num == read_num[(tid%n_tasks) - (m+1)]) ? 1 : 0;
 		prev_intv_size[m] = 0;
 		neighbour_active[m] = 1;
 	}
