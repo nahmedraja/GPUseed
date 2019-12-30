@@ -2104,9 +2104,8 @@ __global__ void find_seed_intervals_gpu(uint32_t *packed_read_batch_fow,  uint32
 
 	int m;
 	for (m = 0; m < N_SHUFFLES; m++) {
-		is_shfl[m] = tid%n_tasks ? 1 : 0;
-		if (is_shfl[m]) is_shfl[m] = (thread_read_num == read_num[(tid%n_tasks) - (m+1)]) ? 1 : 0;
 		if (is_shfl[m]) is_shfl[m] = ((tid%32) - m > 0) ? 1 : 0;
+		if (is_shfl[m]) is_shfl[m] = (tid%n_tasks) - (m+1) < 0 ? 0 : (thread_read_num == read_num[(tid%n_tasks) - (m+1)]) ? 1 : 0;
 		prev_intv_size[m] = 0;
 		neighbour_active[m] = 1;
 	}
@@ -2126,7 +2125,7 @@ __global__ void find_seed_intervals_gpu(uint32_t *packed_read_batch_fow,  uint32
 	int base;
 	bwtint_t l, u;
 	if (tid < n_tasks) {
-		int intv_idx = (2*(read_offsets[thread_read_num] - (thread_read_num*min_seed_size))) + read_len - min_seed_size - 1;
+		int intv_idx = (2*(read_offsets[thread_read_num] - (thread_read_num*(min_seed_size-1)))) + read_len - min_seed_size;
 		int start = read_off&7;
 		uint32_t *seq = &(packed_read_batch_fow[read_off >> 3]);
 		uint32_t pre_calc_seed = 0;
@@ -2155,7 +2154,8 @@ __global__ void find_seed_intervals_gpu(uint32_t *packed_read_batch_fow,  uint32
 			for (; i >= start; i--) {
 				/*get the base*/
 				if (is_active) {
-					prev_seed_interval = make_uint2(l,u);
+					// moved at the bottom of the loop
+					// prev_seed_interval = make_uint2(l,u);
 					int reg_no = i >> 3;
 					int reg_pos = i & 7;
 					int reg = seq[reg_no];
@@ -2174,7 +2174,8 @@ __global__ void find_seed_intervals_gpu(uint32_t *packed_read_batch_fow,  uint32
 					u = L2_gpu[base] + intv.y;
 
 
-					beg_i = (i == start) ? i - 1 : i;
+					// moved at the bottom of the loop
+					//beg_i = (i == start) ? i - 1 : i;
 				}
 				//if (tid == 26 ||tid == 27 || tid == 28) printf("%d-->%d,%d, ",tid, u-l+1, itr);
 //				uint32_t neighbour_intv_size = __shfl_up_sync(0xFFFFFFFF, curr_intv_size, 1);
@@ -2248,6 +2249,11 @@ __global__ void find_seed_intervals_gpu(uint32_t *packed_read_batch_fow,  uint32
 
 				curr_intv_size =  l <= u ? u - l + 1 : curr_intv_size;
 
+				if (is_active) {
+					prev_seed_interval = make_uint2(l,u);
+					beg_i = i - 1;	
+				}
+
 			}
 		}
 		if (read_len - thread_read_idx - beg_i + start - 1 >= min_seed_size && is_smem) {
@@ -2259,7 +2265,7 @@ __global__ void find_seed_intervals_gpu(uint32_t *packed_read_batch_fow,  uint32
 
 	}
 	else {
-		int intv_idx = 2*(read_offsets[thread_read_num] - (thread_read_num*min_seed_size)) + read_len - min_seed_size;
+		int intv_idx = 2*(read_offsets[thread_read_num] - (thread_read_num*(min_seed_size-1))) + read_len - min_seed_size + 1;
 		int start = read_off&7;
 		uint32_t *seq = &(packed_read_batch_rev[read_off >> 3]);
 		uint32_t pre_calc_seed = 0;
@@ -2289,7 +2295,8 @@ __global__ void find_seed_intervals_gpu(uint32_t *packed_read_batch_fow,  uint32
 			for (; i < read_len + start; i++) {
 				/*get the base*/
 				if (is_active) {
-					prev_seed_interval = make_uint2(l,u);
+					// moved at the bottom of the loop
+					//prev_seed_interval = make_uint2(l,u);
 					int reg_no = i >> 3;
 					int reg_pos = i & 7;
 					int reg = seq[reg_no];
@@ -2310,7 +2317,8 @@ __global__ void find_seed_intervals_gpu(uint32_t *packed_read_batch_fow,  uint32
 //						//break;
 //						is_active = 0;
 //					}
-					beg_i = i == (read_len + start - 1) ? read_len + start : i;
+					// moved at the bottom of the loop
+					//beg_i = i == (read_len + start - 1) ? read_len + start : i;
 				}
 //				uint32_t neighbour_intv_size = __shfl_up_sync(0xFFFFFFFF, curr_intv_size, 1);
 //				uint32_t is_neighbour_active = __shfl_up_sync(0xFFFFFFFF, is_active, 1);
@@ -2381,6 +2389,11 @@ __global__ void find_seed_intervals_gpu(uint32_t *packed_read_batch_fow,  uint32
 				}
 
 				curr_intv_size =  l <= u ? u - l + 1 : curr_intv_size;
+
+				if (is_active) {
+					prev_seed_interval = make_uint2(l,u);
+					beg_i = i + 1;
+				}
 			}
 			if (beg_i - start - thread_read_idx >= min_seed_size && is_smem) {
 				atomicAdd(&n_smems_rev[thread_read_num], 1);
@@ -2613,9 +2626,10 @@ __global__ void prepare_batch(uint32_t *thread_read_num, uint32_t *thread_read_i
 	else {
 		int read_no = tid/max_read_length;
 		int offset_in_read = tid - (read_no*max_read_length);
-		if (offset_in_read >= read_sizes[read_no] - min_seed_len) return;
-		thread_read_num[read_offsets[read_no] - (read_no*min_seed_len) + offset_in_read] = read_no;
-		thread_read_idx[read_offsets[read_no] - (read_no*min_seed_len) + offset_in_read] = offset_in_read;
+		//if (offset_in_read >= read_sizes[read_no] - min_seed_len) return;
+		if (offset_in_read > read_sizes[read_no] - min_seed_len) return;
+		thread_read_num[read_offsets[read_no] - (read_no*(min_seed_len-1)) + offset_in_read] = read_no;
+		thread_read_idx[read_offsets[read_no] - (read_no*(min_seed_len-1)) + offset_in_read] = offset_in_read;
 //		int i;
 //		#pragma unroll
 //		for (i = 0; i < read_sizes[tid] - min_seed_len; i++){
@@ -2835,18 +2849,18 @@ int main(int argc, char *argv[]) {
 	uint32_t i;
 	int count_0 = 0;
 	fprintf(stderr,"bwt_size=%llu\n",bwt.bwt_size);
-	for (i = 329700925; i < 329700925 + 16; i++) {
-//		if ( bwt.bwt[i] == 0) {
-//			count_0++;
-//		} else {
-//			count_0 = 0;
-//		}
-//		if (count_0 > 6) {
-//			fprintf(stderr,"i=%llu\n", i);
-//			break;
-//		}
-		fprintf(stderr,"%x\n",bwt.bwt[i]);
-	}
+//	for (i = 329700925; i < 329700925 + 16; i++) {
+////		if ( bwt.bwt[i] == 0) {
+////			count_0++;
+////		} else {
+////			count_0 = 0;
+////		}
+////		if (count_0 > 6) {
+////			fprintf(stderr,"i=%llu\n", i);
+////			break;
+////		}
+//		fprintf(stderr,"%x\n",bwt.bwt[i]);
+//	}
     bwt_t bwt_gpu;
     //cudaDeviceSetLimit(cudaLimitDevRuntimePendingLaunchCount, 32768);
     double index_copy_time = realtime();
@@ -3002,15 +3016,15 @@ int main(int argc, char *argv[]) {
 		void *cub_sort_temp_storage = NULL;
 		size_t cub_sort_storage_bytes = 0;
 
-		cub::DeviceScan::ExclusiveSum(cub_scan_temp_storage, cub_scan_storage_bytes, n_seeds_fow_rev, n_seeds_fow_rev_scan, 2*(read_batch_size_8 - (total_reads*min_seed_size)));
+		cub::DeviceScan::ExclusiveSum(cub_scan_temp_storage, cub_scan_storage_bytes, n_seeds_fow_rev, n_seeds_fow_rev_scan, 2*(read_batch_size_8 - (total_reads*(min_seed_size-1))));
 		fprintf(stderr, "ExclusiveSum bytes for n_smems = %d\n", cub_scan_storage_bytes);
 
 //		cub::DeviceReduce::Sum(cub_sum_temp_storage, cub_sum_storage_bytes, n_smems_fow, &n_smems_fow_sum, total_reads);
 //		fprintf(stderr, "ExclusiveSum bytes for n_smems = %d\n", cub_sum_storage_bytes);
 
-		int max_output_size = 2*2*(read_batch_size_8 - (min_seed_size*total_reads));
+		int max_output_size = 2*2*(read_batch_size_8 - ((min_seed_size-1)*total_reads));
 
-		max_output_size = max_output_size > (2*(read_batch_size_8 - (min_seed_size*total_reads)) + (read_batch_size >> 3) + 2*total_reads + read_batch_size_8 >> 2 + (read_batch_size_8 - (min_seed_size*total_reads))) ? max_output_size : (2*(read_batch_size_8 - (min_seed_size*total_reads)) + (read_batch_size >> 3) + 2*total_reads + read_batch_size_8 >> 2 + (read_batch_size_8 - (min_seed_size*total_reads)));
+		max_output_size = max_output_size > (2*(read_batch_size_8 - ((min_seed_size-1)*total_reads)) + (read_batch_size >> 3) + 2*total_reads + read_batch_size_8 >> 2 + (read_batch_size_8 - ((min_seed_size-1)*total_reads))) ? max_output_size : (2*(read_batch_size_8 - ((min_seed_size-1)*total_reads)) + (read_batch_size >> 3) + 2*total_reads + read_batch_size_8 >> 2 + (read_batch_size_8 - ((min_seed_size-1)*total_reads)));
 
 		cudaMalloc(&read_batch_gpu, read_batch_size_8);
 		cudaMalloc(&read_sizes_gpu, total_reads*sizeof(uint32_t));
@@ -3024,9 +3038,9 @@ int main(int argc, char *argv[]) {
 
 		cudaMalloc(&packed_read_batch_fow,(read_batch_size_8 >> 3)*sizeof(uint32_t));
 		cudaMalloc(&packed_read_batch_rev,(read_batch_size_8 >> 3)*sizeof(uint32_t));
-		cudaMalloc(&n_seeds_fow_rev_scan, ((2*(read_batch_size_8 - (min_seed_size*total_reads))) + 1)*sizeof(uint32_t));
+		cudaMalloc(&n_seeds_fow_rev_scan, ((2*(read_batch_size_8 - ((min_seed_size-1)*total_reads))) + 1)*sizeof(uint32_t));
 		thread_read_num = n_seeds_fow_rev_scan;
-		thread_read_idx = &n_seeds_fow_rev_scan[read_batch_size_8 - (min_seed_size*total_reads)];
+		thread_read_idx = &n_seeds_fow_rev_scan[read_batch_size_8 - ((min_seed_size-1)*total_reads)];
 		//cudaMalloc(&smem_intv_l_fow, (read_batch_size_8 - (min_seed_size*total_reads))*sizeof(uint32_t));
 		//cudaMalloc(&smem_intv_l_rev, (read_batch_size_8 - (min_seed_size*total_reads))*sizeof(uint32_t));
 		//cudaMalloc(&smem_intv_read_pos_fow, (read_batch_size_8 - (min_seed_size*total_reads))*sizeof(int2));
@@ -3047,42 +3061,42 @@ int main(int argc, char *argv[]) {
 		uint32_t *seed_sa_idx_fow_rev_gpu;
 
 
-		cub::DeviceSelect::Flagged(cub_select_temp_storage, cub_select_storage_bytes, (uint32_t*)seed_intervals_fow_rev_gpu, (uint16_t*)is_smem_fow_rev_flag, (uint32_t*)seed_intervals_fow_rev_compact_gpu, n_smems_sum_fow_rev_gpu, 2*2*(read_batch_size_8 - (total_reads*min_seed_size)));
+		cub::DeviceSelect::Flagged(cub_select_temp_storage, cub_select_storage_bytes, (uint32_t*)seed_intervals_fow_rev_gpu, (uint16_t*)is_smem_fow_rev_flag, (uint32_t*)seed_intervals_fow_rev_compact_gpu, n_smems_sum_fow_rev_gpu, 2*2*(read_batch_size_8 - (total_reads*(min_seed_size-1))));
 		fprintf(stderr, "Flagged bytes = %d\n", cub_select_storage_bytes);
 
 		if (is_smem) {
-			cub::DeviceSegmentedRadixSort::SortPairs(cub_sort_temp_storage, cub_sort_storage_bytes, (uint64_t*)seed_read_pos_fow_rev_compact_gpu, (uint64_t*)seed_read_pos_fow_rev_gpu, (uint64_t*)seed_intervals_fow_rev_compact_gpu, (uint64_t*)seed_intervals_fow_rev_gpu,   2*(read_batch_size_8 - (min_seed_size*total_reads)), total_reads, n_smems_fow_rev_scan, n_smems_fow_rev_scan + 1, 0, n_bits_max_read_size);
+			cub::DeviceSegmentedRadixSort::SortPairs(cub_sort_temp_storage, cub_sort_storage_bytes, (uint64_t*)seed_read_pos_fow_rev_compact_gpu, (uint64_t*)seed_read_pos_fow_rev_gpu, (uint64_t*)seed_intervals_fow_rev_compact_gpu, (uint64_t*)seed_intervals_fow_rev_gpu,   2*(read_batch_size_8 - ((min_seed_size-1)*total_reads)), total_reads, n_smems_fow_rev_scan, n_smems_fow_rev_scan + 1, 0, n_bits_max_read_size);
 			fprintf(stderr, "Sort bytes = %d\n", cub_sort_storage_bytes);
 		} else {
-			cub::DeviceSegmentedRadixSort::SortPairs(cub_sort_temp_storage, cub_sort_storage_bytes, (uint64_t*)seed_read_pos_fow_rev_compact_gpu, (uint64_t*)seed_read_pos_fow_rev_gpu, seed_sa_idx_fow_rev_gpu, seed_ref_pos_fow_rev_gpu,  OUTPUT_SIZE_MUL*2*2*(read_batch_size_8 - (min_seed_size*total_reads)), total_reads, n_ref_pos_fow_rev_scan, n_ref_pos_fow_rev_scan + 1, 0, n_bits_max_read_size);
+			cub::DeviceSegmentedRadixSort::SortPairs(cub_sort_temp_storage, cub_sort_storage_bytes, (uint64_t*)seed_read_pos_fow_rev_compact_gpu, (uint64_t*)seed_read_pos_fow_rev_gpu, seed_sa_idx_fow_rev_gpu, seed_ref_pos_fow_rev_gpu,  OUTPUT_SIZE_MUL*2*2*(read_batch_size_8 - ((min_seed_size-1)*total_reads)), total_reads, n_ref_pos_fow_rev_scan, n_ref_pos_fow_rev_scan + 1, 0, n_bits_max_read_size);
 			fprintf(stderr, "Sort bytes = %d\n", cub_sort_storage_bytes);
 		}
 
 
 		uint2 *seed_intervals_pos_fow_rev_gpu;
-		cudaMalloc(&seed_intervals_pos_fow_rev_gpu, OUTPUT_SIZE_MUL*2*2*(read_batch_size_8 - (min_seed_size*total_reads))*sizeof(uint2));
+		cudaMalloc(&seed_intervals_pos_fow_rev_gpu, OUTPUT_SIZE_MUL*2*2*(read_batch_size_8 - ((min_seed_size-1)*total_reads))*sizeof(uint2));
 		seed_read_pos_fow_rev_gpu = (int2*)seed_intervals_pos_fow_rev_gpu;
-		seed_intervals_fow_rev_gpu = &seed_intervals_pos_fow_rev_gpu[2*(read_batch_size_8 - (min_seed_size*total_reads))];
+		seed_intervals_fow_rev_gpu = &seed_intervals_pos_fow_rev_gpu[2*(read_batch_size_8 - ((min_seed_size-1)*total_reads))];
 		uint2 *seed_intervals_pos_fow_rev_compact_gpu;
-		cudaMalloc(&seed_intervals_pos_fow_rev_compact_gpu, OUTPUT_SIZE_MUL*2*2*(read_batch_size_8 - (min_seed_size*total_reads))*sizeof(uint2));
+		cudaMalloc(&seed_intervals_pos_fow_rev_compact_gpu, OUTPUT_SIZE_MUL*2*2*(read_batch_size_8 - ((min_seed_size-1)*total_reads))*sizeof(uint2));
 		seed_read_pos_fow_rev_compact_gpu = (int2*)seed_intervals_pos_fow_rev_compact_gpu;
-		seed_intervals_fow_rev_compact_gpu = &seed_intervals_pos_fow_rev_compact_gpu[2*(read_batch_size_8 - (min_seed_size*total_reads))];
-		//cudaMalloc(&seed_intervals_fow_rev_gpu, 2*(read_batch_size_8 - (min_seed_size*total_reads))*sizeof(uint2));
-		//cudaMalloc(&seed_read_pos_fow_rev_gpu, 2*(read_batch_size_8 - (min_seed_size*total_reads))*sizeof(int2));
-//		cudaMalloc(&seed_intervals_fow_rev_compact_gpu, 2*(read_batch_size_8 - (min_seed_size*total_reads))*sizeof(uint2));
-//		cudaMalloc(&seed_read_pos_fow_rev_compact_gpu, 2*(read_batch_size_8 - (min_seed_size*total_reads))*sizeof(int2));
+		seed_intervals_fow_rev_compact_gpu = &seed_intervals_pos_fow_rev_compact_gpu[2*(read_batch_size_8 - ((min_seed_size-1)*total_reads))];
+		//cudaMalloc(&seed_intervals_fow_rev_gpu, 2*(read_batch_size_8 - ((min_seed_size-1)*total_reads))*sizeof(uint2));
+		//cudaMalloc(&seed_read_pos_fow_rev_gpu, 2*(read_batch_size_8 - ((min_seed_size-1)*total_reads))*sizeof(int2));
+//		cudaMalloc(&seed_intervals_fow_rev_compact_gpu, 2*(read_batch_size_8 - ((min_seed_size-1)*total_reads))*sizeof(uint2));
+//		cudaMalloc(&seed_read_pos_fow_rev_compact_gpu, 2*(read_batch_size_8 - ((min_seed_size-1)*total_reads))*sizeof(int2));
 
 		uint32_t *n_seeds_is_smem_flag_fow_rev;
-		cudaMalloc(&n_seeds_is_smem_flag_fow_rev, OUTPUT_SIZE_MUL*2*2*(read_batch_size_8 - (min_seed_size*total_reads))*sizeof(uint32_t));
+		cudaMalloc(&n_seeds_is_smem_flag_fow_rev, OUTPUT_SIZE_MUL*2*2*(read_batch_size_8 - ((min_seed_size-1)*total_reads))*sizeof(uint32_t));
 		n_seeds_fow_rev = n_seeds_is_smem_flag_fow_rev;
-		is_smem_fow_rev_flag = &n_seeds_is_smem_flag_fow_rev[2*(read_batch_size_8 - (min_seed_size*total_reads))];
+		is_smem_fow_rev_flag = &n_seeds_is_smem_flag_fow_rev[2*(read_batch_size_8 - ((min_seed_size-1)*total_reads))];
 
-		if(!is_smem) cudaMalloc(&seed_ref_pos_fow_rev_gpu, OUTPUT_SIZE_MUL*2*2*(read_batch_size_8 - (min_seed_size*total_reads))*sizeof(uint32_t));
+		if(!is_smem) cudaMalloc(&seed_ref_pos_fow_rev_gpu, OUTPUT_SIZE_MUL*2*2*(read_batch_size_8 - ((min_seed_size-1)*total_reads))*sizeof(uint32_t));
 
 
-//		cudaMalloc(&n_seeds_fow_rev, 2*(read_batch_size_8 - (min_seed_size*total_reads))*sizeof(uint32_t));
+//		cudaMalloc(&n_seeds_fow_rev, 2*(read_batch_size_8 - ((min_seed_size-1)*total_reads))*sizeof(uint32_t));
 //
-//		cudaMalloc(&is_smem_fow_rev_flag, 2*(read_batch_size_8 - (min_seed_size*total_reads))*sizeof(uint32_t));
+//		cudaMalloc(&is_smem_fow_rev_flag, 2*(read_batch_size_8 - ((min_seed_size-1)*total_reads))*sizeof(uint32_t));
 		cudaMalloc(&cub_select_temp_storage,cub_select_storage_bytes);
 		cudaMalloc(&cub_sort_temp_storage,cub_sort_storage_bytes);
 		n_ref_pos_fow_rev_gpu = read_offsets_gpu;
@@ -3108,7 +3122,7 @@ int main(int argc, char *argv[]) {
 		cudaDeviceSynchronize();
 		double assign_threads_for_fow_pack_time = realtime() - assign_threads_for_fow_pack_time_start;
 //		uint32_t *thread_read_num_cpu = (uint32_t*)calloc((read_batch_size_8 >> 3), sizeof(uint32_t));
-//		cudaMemcpy(thread_read_num_cpu, thread_read_num, (read_batch_size_8 >> 3)*sizeof(uint32_tOUTPUT_SIZE_MUL*2*2*(read_batch_size_8 - (min_seed_size*total_reads))), cudaMemcpyDeviceToHost);
+//		cudaMemcpy(thread_read_num_cpu, thread_read_num, (read_batch_size_8 >> 3)*sizeof(uint32_tOUTPUT_SIZE_MUL*2*2*(read_batch_size_8 - ((min_seed_size-1)*total_reads))), cudaMemcpyDeviceToHost);
 //		int k;
 //		for (k = 0; k < (read_batch_size_8 >> 3); k++) {
 //			fprintf(stderr, "%d, ",thread_read_num_cpu[k]);
@@ -3338,8 +3352,8 @@ int main(int argc, char *argv[]) {
 
 
 		double find_seeds_time = realtime();
-		int n_seed_cands = read_batch_size - (total_reads*min_seed_size);
-		cudaMemset(is_smem_fow_rev_flag, 0, 2*(read_batch_size_8 - (min_seed_size*total_reads))*sizeof(uint32_t));
+		int n_seed_cands = read_batch_size - (total_reads*(min_seed_size-1));
+		cudaMemset(is_smem_fow_rev_flag, 0, 2*(read_batch_size_8 - ((min_seed_size-1)*total_reads))*sizeof(uint32_t));
 		cudaMemset(n_smems_fow, 0, total_reads*sizeof(uint32_t));
 		cudaMemset(n_smems_rev, 0, total_reads*sizeof(uint32_t));
 
@@ -3383,8 +3397,8 @@ int main(int argc, char *argv[]) {
 
 		double filter_seeds_time = realtime();
 		cudaError_t err = cudaSuccess;
-		CubDebugExit(cub::DeviceSelect::Flagged(cub_select_temp_storage, cub_select_storage_bytes, (uint32_t*)seed_intervals_fow_rev_gpu, (uint16_t*)is_smem_fow_rev_flag, (uint32_t*)seed_intervals_fow_rev_compact_gpu, n_smems_sum_fow_rev_gpu, 2*2*(read_batch_size_8 - (total_reads*min_seed_size))));
-		CubDebugExit(cub::DeviceSelect::Flagged(cub_select_temp_storage, cub_select_storage_bytes, (int32_t*)seed_read_pos_fow_rev_gpu, (uint16_t*)is_smem_fow_rev_flag, (int32_t*)seed_read_pos_fow_rev_compact_gpu, n_smems_sum_fow_rev_gpu, 2*2*(read_batch_size_8 - (total_reads*min_seed_size))));
+		CubDebugExit(cub::DeviceSelect::Flagged(cub_select_temp_storage, cub_select_storage_bytes, (uint32_t*)seed_intervals_fow_rev_gpu, (uint16_t*)is_smem_fow_rev_flag, (uint32_t*)seed_intervals_fow_rev_compact_gpu, n_smems_sum_fow_rev_gpu, 2*2*(read_batch_size_8 - (total_reads*(min_seed_size-1)))));
+		CubDebugExit(cub::DeviceSelect::Flagged(cub_select_temp_storage, cub_select_storage_bytes, (int32_t*)seed_read_pos_fow_rev_gpu, (uint16_t*)is_smem_fow_rev_flag, (int32_t*)seed_read_pos_fow_rev_compact_gpu, n_smems_sum_fow_rev_gpu, 2*2*(read_batch_size_8 - (total_reads*(min_seed_size-1)))));
 
 
 //		if (err != cudaSuccess) {
@@ -3538,8 +3552,8 @@ int main(int argc, char *argv[]) {
 
 		cudaMemcpy(&n_seeds_sum_fow_rev, n_seeds_sum_fow_rev_gpu, sizeof(uint32_t), cudaMemcpyDeviceToHost);
 
-		if(n_seeds_sum_fow_rev > OUTPUT_SIZE_MUL*2*2*(read_batch_size_8 - (min_seed_size*total_reads))) {
-			fprintf(stderr,"n_seeds_sum_fow_rev (%llu) is more than allocated size(%d)\n", n_seeds_sum_fow_rev, OUTPUT_SIZE_MUL*2*2*(read_batch_size_8 - (min_seed_size*total_reads)));
+		if(n_seeds_sum_fow_rev > OUTPUT_SIZE_MUL*2*2*(read_batch_size_8 - ((min_seed_size-1)*total_reads))) {
+			fprintf(stderr,"n_seeds_sum_fow_rev (%llu) is more than allocated size(%d)\n", n_seeds_sum_fow_rev, OUTPUT_SIZE_MUL*2*2*(read_batch_size_8 - ((min_seed_size-1)*total_reads)));
 			exit(EXIT_FAILURE);
 		}
 
